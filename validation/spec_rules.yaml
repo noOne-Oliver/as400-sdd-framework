@@ -1,0 +1,10 @@
+required_sections:
+  - 概述
+  - 输入输出文件
+  - 业务规则
+  - 处理流程
+  - 错误处理
+  - 测试策略
+quality_gates:
+  minimum_score: 7
+  traceability_required: true

@@ -1,0 +1,14 @@
+required_tokens:
+  - ctl-opt
+  - dcl-f
+  - ORDPF
+  - CUSTMF
+  - INVPF
+  - ORDLOGPF
+  - monitor
+status_codes:
+  - "02"
+  - "08"
+  - "09"
+quality_gates:
+  minimum_score: 7

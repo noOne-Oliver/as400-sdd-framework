@@ -1,0 +1,20 @@
+name: as400-sdd-framework
+llm:
+  provider: mock
+  model: llama3.1
+  base_url: http://localhost:11434
+pipeline:
+  manual_approval_points:
+    - REQUIREMENTS
+    - SPEC_DESIGN
+    - CODE_REVIEW
+  stages:
+    - REQUIREMENTS
+    - SPEC_DESIGN
+    - TEST_DESIGN
+    - CODE_GENERATION
+    - CODE_REVIEW
+    - TEST_EXECUTION
+runtime:
+  max_retries: 3
+  artifact_encoding: utf-8

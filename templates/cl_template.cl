@@ -1,0 +1,5 @@
+PGM
+  DCL VAR(&MSG) TYPE(*CHAR) LEN(50)
+  CHGVAR VAR(&MSG) VALUE('{program_name} CL stub created')
+  SNDPGMMSG MSG(&MSG) TOUSR(*SYSOPR)
+ENDPGM

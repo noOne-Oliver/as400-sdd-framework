@@ -1,0 +1,21 @@
+judge:
+  pass_score: 7
+validation:
+  spec:
+    required_sections:
+      - 概述
+      - 业务规则
+      - 处理流程
+      - 错误处理
+      - 测试策略
+  tests:
+    required_status_codes:
+      - "02"
+      - "08"
+      - "09"
+  code:
+    required_files:
+      - ORDPF
+      - CUSTMF
+      - INVPF
+      - ORDLOGPF

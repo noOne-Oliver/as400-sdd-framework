@@ -1,0 +1,25 @@
+agents:
+  ra_agent:
+    role: 需求分析 Agent
+    prompt: prompts/ra_agent/analyze.md
+    output: analysis.md
+  sd_agent:
+    role: 规格设计 Agent
+    prompt: prompts/sd_agent/generate_sdd.md
+    output: sdd.md
+  td_agent:
+    role: 测试设计 Agent
+    prompt: prompts/td_agent/generate_tests.md
+    output: tests.md
+  cg_agent:
+    role: 代码生成 Agent
+    prompt: prompts/cg_agent/generate_rpgle.md
+    output: "<program>.rpgle"
+  cr_agent:
+    role: 代码评审 Agent
+    prompt: prompts/cr_agent/review_code.md
+    output: review.md
+  te_agent:
+    role: 测试执行 Agent
+    prompt: prompts/judge/test_judge.md
+    output: execution_report.md
