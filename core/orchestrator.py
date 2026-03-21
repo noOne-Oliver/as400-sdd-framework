@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Union
@@ -97,16 +98,9 @@ class Orchestrator:
                 output_dir=target_dir,
                 allow_human_intervention=allow_human_intervention,
             )
-            tests_result = self.transition_test_design(
+            tests_result, code_result = self._run_parallel_td_and_cg(
                 analysis=analysis,
                 sdd=sdd_result["sdd"],
-                output_dir=target_dir,
-                allow_human_intervention=allow_human_intervention,
-            )
-            code_result = self.transition_code_generation(
-                analysis=analysis,
-                sdd=sdd_result["sdd"],
-                tests=tests_result["tests"],
                 output_dir=target_dir,
                 allow_human_intervention=allow_human_intervention,
             )
@@ -517,3 +511,119 @@ class Orchestrator:
                 f"测试执行完成，结果 {output.get('passed_count', 0)}/{output.get('total_count', 0)} 通过。"
             )[:200]
         return "阶段完成。"
+
+    def _run_parallel_td_and_cg(
+        self,
+        analysis: dict,
+        sdd: str,
+        output_dir: Path,
+        allow_human_intervention: bool,
+    ) -> tuple:
+        """Run TDAgent and CGAgent in parallel, then verify both pass judge.
+
+        TD needs: analysis, sdd, context_summary
+        CG needs: analysis, sdd, tests, context_summary
+
+        Since CG also needs tests (for the status_comment injection), we
+        run TD first and let CG wait on TD's result via shared state.
+        """
+        td_done = {"result": None, "error": None}
+        cg_blocked = {"tests": "", "error": None}
+
+        def run_td():
+            try:
+                self.state_machine.transition_to(PipelineState.TEST_DESIGN)
+                result = self.transition_test_design_raw(
+                    analysis=analysis,
+                    sdd=sdd,
+                    output_dir=output_dir,
+                    allow_human_intervention=allow_human_intervention,
+                )
+                td_done["result"] = result
+                cg_blocked["tests"] = result["tests"]
+            except Exception as exc:
+                td_done["error"] = str(exc)
+
+        def run_cg():
+            # Wait for TD to complete
+            while td_done["result"] is None and td_done["error"] is None:
+                import time
+                time.sleep(0.1)
+            if td_done["error"]:
+                cg_blocked["error"] = td_done["error"]
+                return
+            try:
+                self.state_machine.transition_to(PipelineState.CODE_GENERATION)
+                result = self.transition_code_generation_raw(
+                    analysis=analysis,
+                    sdd=sdd,
+                    tests=cg_blocked["tests"],
+                    output_dir=output_dir,
+                    allow_human_intervention=allow_human_intervention,
+                )
+                cg_blocked["result"] = result
+            except Exception as exc:
+                cg_blocked["error"] = str(exc)
+
+        # Run both threads
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_td = ex.submit(run_td)
+            f_cg = ex.submit(run_cg)
+            f_td.result()
+            f_cg.result()
+
+        # Propagate errors if any
+        if td_done["error"]:
+            raise RuntimeError(f"TD stage failed: {td_done['error']}")
+        if cg_blocked["error"]:
+            raise RuntimeError(f"CG stage failed: {cg_blocked['error']}")
+
+        return td_done["result"], cg_blocked["result"]
+
+    def transition_test_design_raw(
+        self,
+        analysis: dict,
+        sdd: str,
+        output_dir: Path,
+        allow_human_intervention: bool,
+    ) -> dict:
+        return self._run_agent_with_judge(
+            state=PipelineState.TEST_DESIGN,
+            agent_runner=lambda payload: self.td_agent.execute(payload),
+            validator=lambda output: self.td_agent.validate_output(output),
+            judge_runner=lambda output: self.judge.evaluate_tests(output["tests"]),
+            input_data={
+                "analysis": analysis,
+                "sdd": sdd,
+                "context_summary": self._get_context_summary(),
+            },
+            artifact_key="tests",
+            artifact_path=output_dir / "tests.md",
+            agent_name=self.td_agent.name,
+            allow_human_intervention=allow_human_intervention,
+        )
+
+    def transition_code_generation_raw(
+        self,
+        analysis: dict,
+        sdd: str,
+        tests: str,
+        output_dir: Path,
+        allow_human_intervention: bool,
+    ) -> dict:
+        return self._run_agent_with_judge(
+            state=PipelineState.CODE_GENERATION,
+            agent_runner=lambda payload: self.cg_agent.execute(payload),
+            validator=lambda output: self.cg_agent.validate_output(output),
+            judge_runner=lambda output: self.judge.evaluate_code(output["code"]),
+            input_data={
+                "analysis": analysis,
+                "sdd": sdd,
+                "tests": tests,
+                "context_summary": self._get_context_summary(),
+            },
+            artifact_key="code",
+            artifact_path=output_dir / f"{analysis['program_name']}.rpgle",
+            agent_name=self.cg_agent.name,
+            allow_human_intervention=allow_human_intervention,
+        )

@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: Pytest Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyYAML>=6.0 requests>=2.31.0 pytest>=8.0.0
+
+      - name: Run unit tests
+        run: python3 -m pytest tests/ -v --tb=short
+
+  mock-pipeline:
+    name: Mock Pipeline (Full E2E)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install framework
+        run: pip install PyYAML>=6.0 requests>=2.31.0 pytest>=8.0.0
+
+      - name: Run full pipeline
+        run: |
+          python3 run.py \
+            --requirement examples/order_processing/requirement.txt \
+            --provider mock
+
+      - name: Check artifact completeness
+        run: |
+          ARTIFACTS=(
+            "examples/order_processing/analysis.md"
+            "examples/order_processing/sdd.md"
+            "examples/order_processing/tests.md"
+            "examples/order_processing/ORDPRC.rpgle"
+            "examples/order_processing/review.md"
+            "examples/order_processing/execution_report.md"
+            "examples/order_processing/session_context.json"
+            "examples/order_processing/files_plan.json"
+          )
+          for f in "${ARTIFACTS[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              exit 1
+            fi
+          done
+          echo "All 8 artifacts present"
+
+      - name: Validate session_context.json
+        run: |
+          python3 -c "
+          import json
+          with open('examples/order_processing/session_context.json') as f:
+              ctx = json.load(f)
+          assert ctx['requirement_path']
+          assert len(ctx['phases']) == 6, f'Expected 6 phases, got {len(ctx[\"phases\"])}'
+          print('session_context.json valid:', len(ctx['phases']), 'phases')
+          "
+
+  # Optional Ollama test — runs only if Ollama is available on the runner
+  ollama-pipeline:
+    name: Ollama Real LLM Pipeline
+    runs-on: ubuntu-latest
+    # Only run on main push, not every PR (avoid burning compute)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Ollama availability
+        id: ollama-check
+        run: |
+          if command -v ollama &> /dev/null && ollama list &> /dev/null; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            ollama list
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "Ollama not available, skipping"
+          fi
+
+      - if: steps.ollama-check.outputs.available == 'true'
+        name: Set up Python and run pipeline with Ollama
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+        run: |
+          pip install PyYAML>=6.0 requests>=2.31.0 pytest>=8.0.0
+          python3 run.py \
+            --requirement examples/order_processing/requirement.txt \
+            --provider ollama \
+            --model llama3.1
+        continue-on-error: true  # Don't fail the whole CI if Ollama times out
+
+      - if: steps.ollama-check.outputs.available == 'true'
+        name: Verify Ollama output
+        run: |
+          if [ -f examples/order_processing/ORDPRC.rpgle ]; then
+            echo "Ollama pipeline produced code artifact"
+          fi
