@@ -99,6 +99,8 @@ python3 run.py \
 - `AGENTS.md` 定义了 OpenCode 在本仓库内的工作约束与验证步骤。
 - `.opencode/config.json` 提供了 OpenCode 的 provider/model 配置，并把 `AGENTS.md` 注册为 instructions。
 - `run.py` 是新的自动化入口，输出 JSON 结果，便于 OpenCode、脚本和 CI 消费。
+- 运行结束后会额外落盘 `session_context.json` 与 `files_plan.json`，分别用于跨阶段上下文追踪与代码生成文件规划。
+- 各阶段 Agent 会读取上游阶段摘要并在 mock 产物中保留 `执行上下文`，用于验证上下文是否跨阶段传递。
 - 若要让 OpenCode 使用自定义配置路径，请通过 `OPENCODE_CONFIG=.opencode/config.json` 启动。
 
 ## API 参考（核心入口）

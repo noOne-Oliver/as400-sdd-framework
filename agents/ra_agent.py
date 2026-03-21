@@ -16,6 +16,7 @@ class RAAgent(BaseAgent):
         program_name = self._extract_program_name(requirement_text)
         steps = self._extract_numbered_lines(requirement_text)
         feedback = input_data.get("feedback", "")
+        context_summary = input_data.get("context_summary", "").strip()
 
         open_questions = []
         if "日志" in requirement_text and "格式" not in requirement_text:
@@ -28,6 +29,7 @@ class RAAgent(BaseAgent):
             requirement_text=requirement_text,
             steps=steps,
             open_questions=open_questions,
+            context_summary=context_summary,
         )
 
         return {
@@ -75,6 +77,7 @@ class RAAgent(BaseAgent):
         requirement_text: str,
         steps: list[str],
         open_questions: list[str],
+        context_summary: str,
     ) -> str:
         joined_steps = "\n".join(f"- {step}" for step in steps) or "- 未解析到编号步骤"
         joined_questions = (
@@ -82,7 +85,11 @@ class RAAgent(BaseAgent):
             if open_questions
             else "- 当前 mock 分析未发现阻塞性问题"
         )
+        context_section = context_summary or "暂无上游阶段上下文。"
         return f"""# 需求分析报告
+
+## 执行上下文
+{context_section}
 
 ## 程序
 - 程序名: {program_name}

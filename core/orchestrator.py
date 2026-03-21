@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -20,6 +21,7 @@ from core.exceptions import HumanInterventionRequired, PipelineFailedError
 from core.judge import Judge, JudgeResult
 from core.knowledge_graph import KnowledgeGraph
 from core.llm_client import LLMClient
+from core.session_context import PhaseRecord, SessionContext
 from core.state_machine import PipelineState, StateMachine
 
 builtins.OK = "OK"
@@ -36,6 +38,7 @@ class Orchestrator:
         base_url: str = None,
         max_retries: int = 3,
         logger: "logging.Logger" = None,
+        requirement_path: str | Path = None,
     ):
         self.config_dir = Path(config_dir)
         self.pipeline_config = self._load_yaml("pipeline.yaml")
@@ -62,6 +65,7 @@ class Orchestrator:
         self.cg_agent = CGAgent(self.llm_client)
         self.cr_agent = CRAgent(self.llm_client)
         self.te_agent = TEAgent(self.llm_client)
+        self.session_context = SessionContext(str(requirement_path)) if requirement_path else None
 
     def run(
         self,
@@ -75,6 +79,7 @@ class Orchestrator:
 
         self.logger.info("Pipeline started for requirement: %s", requirement_file)
         self.state_machine = StateMachine()
+        self.session_context = SessionContext(str(requirement_file))
 
         try:
             requirement_text = requirement_file.read_text(encoding="utf-8")
@@ -122,6 +127,7 @@ class Orchestrator:
                 PipelineState.COMPLETED,
                 {"message": "Pipeline completed successfully"},
             )
+            self.session_context.save(target_dir)
             self.logger.info("Pipeline completed successfully")
             return {
                 "status": "completed",
@@ -134,6 +140,7 @@ class Orchestrator:
                     "review_report": review_result["review_report"],
                     "execution_report": execution_result["execution_report"],
                 },
+                "session_context": self.session_context.to_dict(),
             }
         except HumanInterventionRequired as exc:
             self.logger.warning("Pipeline paused for human intervention: %s", exc.reason)
@@ -171,9 +178,11 @@ class Orchestrator:
             input_data={
                 "requirement_text": requirement_text,
                 "knowledge_context": self.knowledge_graph.build_context(requirement_text),
+                "context_summary": self._get_context_summary(),
             },
             artifact_key="analysis_markdown",
             artifact_path=output_dir / "analysis.md",
+            agent_name=self.ra_agent.name,
             allow_human_intervention=allow_human_intervention,
         )
 
@@ -189,9 +198,10 @@ class Orchestrator:
             agent_runner=lambda payload: self.sd_agent.execute(payload),
             validator=lambda output: self.sd_agent.validate_output(output),
             judge_runner=lambda output: self.judge.evaluate_spec(output["sdd"]),
-            input_data={"analysis": analysis},
+            input_data={"analysis": analysis, "context_summary": self._get_context_summary()},
             artifact_key="sdd",
             artifact_path=output_dir / "sdd.md",
+            agent_name=self.sd_agent.name,
             allow_human_intervention=allow_human_intervention,
         )
 
@@ -208,9 +218,14 @@ class Orchestrator:
             agent_runner=lambda payload: self.td_agent.execute(payload),
             validator=lambda output: self.td_agent.validate_output(output),
             judge_runner=lambda output: self.judge.evaluate_tests(output["tests"]),
-            input_data={"analysis": analysis, "sdd": sdd},
+            input_data={
+                "analysis": analysis,
+                "sdd": sdd,
+                "context_summary": self._get_context_summary(),
+            },
             artifact_key="tests",
             artifact_path=output_dir / "tests.md",
+            agent_name=self.td_agent.name,
             allow_human_intervention=allow_human_intervention,
         )
 
@@ -228,9 +243,15 @@ class Orchestrator:
             agent_runner=lambda payload: self.cg_agent.execute(payload),
             validator=lambda output: self.cg_agent.validate_output(output),
             judge_runner=lambda output: self.judge.evaluate_code(output["code"]),
-            input_data={"analysis": analysis, "sdd": sdd, "tests": tests},
+            input_data={
+                "analysis": analysis,
+                "sdd": sdd,
+                "tests": tests,
+                "context_summary": self._get_context_summary(),
+            },
             artifact_key="code",
             artifact_path=output_dir / f"{analysis['program_name']}.rpgle",
+            agent_name=self.cg_agent.name,
             allow_human_intervention=allow_human_intervention,
         )
 
@@ -248,6 +269,7 @@ class Orchestrator:
         input_data = {
             "program_name": program_name,
             "code": code,
+            "context_summary": self._get_context_summary(),
         }
         feedback = ""
 
@@ -256,6 +278,24 @@ class Orchestrator:
             review_validation = self.cr_agent.validate_output(review_output)
             if not review_validation.passed:
                 feedback = "; ".join(review_validation.issues)
+                if attempt == self.max_retries:
+                    self._handle_human_intervention(
+                        allow_human_intervention,
+                        PipelineState.CODE_REVIEW,
+                        feedback,
+                        {"program_name": program_name},
+                    )
+                    raise PipelineFailedError(feedback)
+                regenerated = self.cg_agent.retry_with_feedback(
+                    {
+                        "analysis": analysis,
+                        "sdd": sdd,
+                        "tests": tests,
+                        "context_summary": self._get_context_summary(),
+                    },
+                    feedback,
+                )
+                input_data["code"] = regenerated["code"]
                 continue
 
             judge_result = self.judge.evaluate_code(review_output["reviewed_code"])
@@ -264,6 +304,7 @@ class Orchestrator:
 
             if judge_result.passed:
                 self.logger.info("Code review passed on attempt %s", attempt)
+                self._record_phase(PipelineState.CODE_REVIEW, self.cr_agent.name, review_output)
                 return review_output
 
             feedback = self._format_feedback("code review", judge_result)
@@ -281,6 +322,7 @@ class Orchestrator:
                     "analysis": analysis,
                     "sdd": sdd,
                     "tests": tests,
+                    "context_summary": self._get_context_summary(),
                 },
                 feedback,
             )
@@ -305,6 +347,7 @@ class Orchestrator:
         self._write_artifact(output_dir / "execution_report.md", output["execution_report"])
         score = 8 if output.get("passed") else 4
         output["judge_result"] = {"score": score, "passed": score >= 7, "issues": [], "recommendations": ["Test execution completed"]}
+        self._record_phase(PipelineState.TEST_EXECUTION, self.te_agent.name, output)
         return output
 
     def _run_agent_with_judge(
@@ -316,6 +359,7 @@ class Orchestrator:
         input_data: dict,
         artifact_key: str,
         artifact_path: Path,
+        agent_name: str,
         allow_human_intervention: bool,
     ) -> dict:
         feedback = ""
@@ -342,6 +386,14 @@ class Orchestrator:
 
             if judge_result.passed:
                 self.logger.info("%s passed judge with score=%s", state.value, judge_result.score)
+                if state == PipelineState.CODE_GENERATION:
+                    for filename, content in output.get("generated_files", {}).items():
+                        self._write_artifact(artifact_path.parent / filename, content)
+                    self._write_json_artifact(
+                        artifact_path.parent / "files_plan.json",
+                        output.get("files_to_generate", []),
+                    )
+                self._record_phase(state, agent_name, output)
                 return output
 
             last_error = self._format_feedback(state.value, judge_result)
@@ -375,6 +427,13 @@ class Orchestrator:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
+    def _write_json_artifact(self, path: Path, payload: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def _load_yaml(self, filename: str) -> dict:
         path = self.config_dir / filename
         if not path.exists():
@@ -404,3 +463,53 @@ class Orchestrator:
 
     def dump_state(self) -> str:
         return json.dumps(self.state_machine.snapshot(), ensure_ascii=False, indent=2)
+
+    def _get_context_summary(self) -> str:
+        if not self.session_context:
+            return ""
+        return self.session_context.get_history_summary()
+
+    def _record_phase(self, state: PipelineState, agent_name: str, output: dict) -> None:
+        if not self.session_context:
+            return
+        judge_payload = output.get("judge_result", {})
+        score = judge_payload.get("score", 0)
+        record = PhaseRecord(
+            phase=state.value,
+            agent=agent_name,
+            summary=self._build_phase_summary(state, output),
+            score=score,
+            artifacts=self._sanitize_artifacts(output),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        self.session_context.add_phase(record)
+
+    @staticmethod
+    def _sanitize_artifacts(output: dict) -> dict:
+        sanitized = {}
+        for key, value in output.items():
+            if key == "checklist" and hasattr(value, "__dict__"):
+                sanitized[key] = value.__dict__
+            elif key != "judge_result":
+                sanitized[key] = value
+        return sanitized
+
+    @staticmethod
+    def _build_phase_summary(state: PipelineState, output: dict) -> str:
+        if state == PipelineState.REQUIREMENTS:
+            return output.get("summary", "需求分析完成。")[:200]
+        if state == PipelineState.SPEC_DESIGN:
+            return f"{output.get('program_name', '')} 设计说明已生成，包含业务规则、处理流程与测试策略。"[:200]
+        if state == PipelineState.TEST_DESIGN:
+            return f"{output.get('program_name', '')} 测试设计已生成，覆盖 02/08/09 状态与日志场景。"[:200]
+        if state == PipelineState.CODE_GENERATION:
+            planned = output.get("files_to_generate", [])
+            filenames = ", ".join(item["filename"] for item in planned)
+            return f"代码生成完成，规划文件: {filenames}"[:200]
+        if state == PipelineState.CODE_REVIEW:
+            return "；".join(output.get("findings", []))[:200]
+        if state == PipelineState.TEST_EXECUTION:
+            return (
+                f"测试执行完成，结果 {output.get('passed_count', 0)}/{output.get('total_count', 0)} 通过。"
+            )[:200]
+        return "阶段完成。"

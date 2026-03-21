@@ -1,3 +1,6 @@
+# 执行上下文
+[REQUIREMENTS] ra_agent score=7: ORDPRC 负责读取待处理订单并完成客户、库存、状态、日志闭环。
+
 # 软件设计说明书 (SDD)
 
 ## 1. 文档信息

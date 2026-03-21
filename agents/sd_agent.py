@@ -13,6 +13,7 @@ class SDAgent(BaseAgent):
 
     def execute(self, input_data: dict) -> dict:
         analysis = input_data["analysis"]
+        context_summary = input_data.get("context_summary", "").strip()
         template = Path("templates/sdd_template.md").read_text(encoding="utf-8")
         sdd = template.format(
             program_name=analysis["program_name"],
@@ -24,6 +25,8 @@ class SDAgent(BaseAgent):
             if analysis["open_questions"]
             else "- 无阻塞性问题，进入设计阶段。",
         )
+        if context_summary:
+            sdd = f"# 执行上下文\n{context_summary}\n\n{sdd}"
         return {
             "program_name": analysis["program_name"],
             "sdd": sdd,

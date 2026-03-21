@@ -40,7 +40,9 @@ def test_run_cli_generates_artifacts(
         "sdd.md",
         "tests.md",
         "ORDPRC.rpgle",
+        "files_plan.json",
         "review.md",
         "execution_report.md",
+        "session_context.json",
     }
     assert expected_files.issubset({path.name for path in generated_output_dir.iterdir()})

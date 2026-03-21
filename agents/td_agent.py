@@ -13,8 +13,11 @@ class TDAgent(BaseAgent):
 
     def execute(self, input_data: dict) -> dict:
         analysis = input_data["analysis"]
+        context_summary = input_data.get("context_summary", "").strip()
         template = Path("templates/test_template.md").read_text(encoding="utf-8")
         tests = template.format(program_name=analysis["program_name"])
+        if context_summary:
+            tests = f"# 执行上下文\n{context_summary}\n\n{tests}"
         return {
             "program_name": analysis["program_name"],
             "tests": tests,
