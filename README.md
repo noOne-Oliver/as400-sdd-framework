@@ -74,6 +74,33 @@
 ./scripts/run_pipeline.sh examples/order_processing/requirement.txt
 ```
 
+### OpenCode Workflow
+```bash
+export OPENCODE_CONFIG=.opencode/config.json
+
+# 先让 OpenCode 读取项目指导
+opencode run "Read AGENTS.md and summarize the current AS400 SDD workflow."
+
+# 用 mock provider 生成一套可验证的产物
+python3 run.py \
+  --requirement examples/order_processing/requirement.txt \
+  --output-dir /tmp/as400-opencode-demo \
+  --provider mock
+
+# 需要接入本地模型时，可切换为框架 provider 或 OpenCode provider
+python3 run.py \
+  --requirement examples/order_processing/requirement.txt \
+  --output-dir /tmp/as400-opencode-ollama \
+  --provider ollama \
+  --model qwen2.5-coder
+```
+
+说明：
+- `AGENTS.md` 定义了 OpenCode 在本仓库内的工作约束与验证步骤。
+- `.opencode/config.json` 提供了 OpenCode 的 provider/model 配置，并把 `AGENTS.md` 注册为 instructions。
+- `run.py` 是新的自动化入口，输出 JSON 结果，便于 OpenCode、脚本和 CI 消费。
+- 若要让 OpenCode 使用自定义配置路径，请通过 `OPENCODE_CONFIG=.opencode/config.json` 启动。
+
 ## API 参考（核心入口）
 
 ```python
