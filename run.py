@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from core.config_loader import SDDConfig
 from core.orchestrator import Orchestrator
 
 
@@ -27,12 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider",
         default=None,
         choices=["mock", "ollama", "openai", "openai-compatible"],
-        help="LLM provider override. Defaults to config/pipeline.yaml.",
+        help="LLM provider override. Defaults to sdd_config.yaml.",
     )
     parser.add_argument(
         "--model",
         default=None,
-        help="Model override. Defaults to config/pipeline.yaml.",
+        help="Model override. Defaults to sdd_config.yaml.",
     )
     return parser
 
@@ -58,7 +59,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     output_dir = Path(args.output_dir) if args.output_dir else requirement_path.parent
-    orchestrator = Orchestrator(provider=args.provider, model=args.model)
+
+    # Load unified config
+    config = SDDConfig()
+
+    # CLI overrides
+    provider = args.provider or config.llm_provider()
+    model = args.model or config.llm_model()
+
+    orchestrator = Orchestrator(
+        config=config,
+        provider=provider,
+        model=model,
+        requirement_path=str(requirement_path),
+    )
     result = orchestrator.run(requirement_path, output_dir=output_dir)
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

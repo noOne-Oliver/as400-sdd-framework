@@ -1,0 +1,138 @@
+# =============================================================================
+# AS400 SDD Framework — Unified Configuration
+# =============================================================================
+# 单配置入口：替换 pipeline.yaml / agents.yaml / validation.yaml 的分散配置
+# =============================================================================
+
+name: as400-sdd-framework
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# LLM Provider
+# ---------------------------------------------------------------------------
+llm:
+  provider: mock          # "mock" | "ollama" | "openai"
+  model: llama3.1
+  base_url: http://localhost:11434
+  max_retries: 3
+  timeout: 60
+
+# ---------------------------------------------------------------------------
+# Pipeline Stages
+# ---------------------------------------------------------------------------
+pipeline:
+  # 固定顺序，勿随意调整
+  stages:
+    - REQUIREMENTS      # 需求分析
+    - SPEC_DESIGN        # 规格设计
+    - TEST_DESIGN        # 测试设计
+    - CODE_GENERATION    # 代码生成
+    - CODE_REVIEW        # 代码评审
+    - TEST_EXECUTION     # 测试执行
+
+  # 人工介入点（到达该阶段时暂停，等待确认）
+  manual_approval_points:
+    - REQUIREMENTS
+    - SPEC_DESIGN
+    - CODE_REVIEW
+
+  # 单阶段最大重试次数
+  max_retries: 3
+
+  # 产物默认编码
+  artifact_encoding: utf-8
+
+# ---------------------------------------------------------------------------
+# Validation Rule Files
+# ---------------------------------------------------------------------------
+validation:
+  spec_rules_path:  validation/spec_rules.yaml
+  code_rules_path:  validation/code_rules.yaml
+  test_rules_path: validation/test_rules.yaml
+
+# ---------------------------------------------------------------------------
+# Agent Prompt Templates
+# ---------------------------------------------------------------------------
+agents:
+  ra_agent:
+    name: ra_agent
+    description: Requirements Analyst — extracts program name, steps, open questions
+    prompt_template: |
+      You are the Requirements Analyst Agent.
+      Given a requirement specification, produce a structured analysis markdown.
+
+  sd_agent:
+    name: sd_agent
+    description: Spec Design Agent — generates SDD markdown from analysis
+    prompt_template: |
+      You are the Spec Design Agent.
+      Given a requirement analysis, produce a complete SDD specification.
+
+  td_agent:
+    name: td_agent
+    description: Test Design Agent — generates test case document
+    prompt_template: |
+      You are the Test Design Agent.
+      Given SDD and analysis, produce a test specification.
+
+  cg_agent:
+    name: cg_agent
+    description: Code Generation Agent — produces RPGLE or CL source
+    prompt_template: |
+      You are the Code Generation Agent.
+      Given SDD, analysis and tests, produce the source code.
+
+  cr_agent:
+    name: cr_agent
+    description: Code Review Agent — validates generated code
+    prompt_template: |
+      You are the Code Review Agent.
+      Validate code structure and business rule completeness.
+
+  te_agent:
+    name: te_agent
+    description: Test Execution Agent — runs tests and reports results
+    prompt_template: |
+      You are the Test Execution Agent.
+      Execute test cases and report results.
+
+# ---------------------------------------------------------------------------
+# Tool Registry
+# ---------------------------------------------------------------------------
+tools:
+  enabled:
+    - shell
+    - file
+
+  shell:
+    allowed_commands:
+      - python3
+      - ls
+      - cat
+      - cd
+      - pwd
+    working_dir: .
+
+  file:
+    allowed_operations:
+      - read
+      - write
+      - list
+    base_dir: .
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph
+# ---------------------------------------------------------------------------
+knowledge:
+  knowledge_dir: knowledge
+  memory_path: knowledge/.kg_memory.json
+  search_limit: 5
+  context_limit: 3
+
+# ---------------------------------------------------------------------------
+# Session / Output
+# ---------------------------------------------------------------------------
+session:
+  output_dir: outputs
+  save_session_context: true
+  save_files_plan: true

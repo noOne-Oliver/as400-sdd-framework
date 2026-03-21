@@ -7,9 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
-
-import yaml
+from typing import Callable, Optional, Union
 
 from agents.cg_agent import CGAgent
 from agents.cr_agent import CRAgent
@@ -17,6 +15,7 @@ from agents.ra_agent import RAAgent
 from agents.sd_agent import SDAgent
 from agents.td_agent import TDAgent
 from agents.te_agent import TEAgent
+from core.config_loader import SDDConfig
 from core.exceptions import HumanInterventionRequired, PipelineFailedError
 from core.judge import Judge, JudgeResult
 from core.knowledge_graph import KnowledgeGraph
@@ -32,30 +31,35 @@ class Orchestrator:
 
     def __init__(
         self,
-        config_dir: "Path" = "config",
-        provider: str = None,
-        model: str = None,
-        base_url: str = None,
-        max_retries: int = 3,
+        config: "SDDConfig" = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_retries: Optional[int] = None,
         logger: "logging.Logger" = None,
-        requirement_path: str | Path = None,
+        requirement_path: Optional[str] = None,
     ):
-        self.config_dir = Path(config_dir)
-        self.pipeline_config = self._load_yaml("pipeline.yaml")
-        self.agent_config = self._load_yaml("agents.yaml")
-        self.validation_config = self._load_yaml("validation.yaml")
+        self.config = config or SDDConfig()
 
-        provider_name = provider or self.pipeline_config.get("llm", {}).get("provider", "mock")
-        model_name = model or self.pipeline_config.get("llm", {}).get("model", "llama3.1")
-        base_url_value = (
-            base_url
-            or self.pipeline_config.get("llm", {}).get("base_url", "http://localhost:11434")
+        provider_name = provider or self.config.llm_provider()
+        model_name = model or self.config.llm_model()
+        base_url_value = base_url or self.config.llm_base_url()
+
+        self.max_retries = max_retries if max_retries is not None else self.config.pipeline_max_retries()
+
+        self.llm_client = LLMClient(
+            provider=provider_name,
+            model=model_name,
+            base_url=base_url_value,
         )
-
-        self.max_retries = max_retries
-        self.llm_client = LLMClient(provider=provider_name, model=model_name, base_url=base_url_value)
-        self.judge = Judge(self.llm_client, pass_score=self.validation_config.get("judge", {}).get("pass_score", 7))
-        self.knowledge_graph = KnowledgeGraph("knowledge")
+        self.judge = Judge(
+            self.llm_client,
+            pass_score=7,
+        )
+        self.knowledge_graph = KnowledgeGraph(
+            knowledge_dir=self.config.knowledge_dir(),
+            memory_path=self.config.knowledge_memory_path(),
+        )
         self.state_machine = StateMachine()
         self.logger = logger or self._build_logger()
 

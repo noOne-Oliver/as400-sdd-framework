@@ -6,8 +6,11 @@ import builtins
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import List
 
 from core.llm_client import LLMClient
+from tools.base_tool import BaseTool, ToolResult
+from tools.tool_registry import ToolRegistry
 
 builtins.OK = "OK"
 
@@ -33,6 +36,15 @@ class BaseAgent(ABC):
         self.name = name
         self.llm_client = llm_client or LLMClient(provider="mock")
         self.prompt_dir = Path(prompt_dir) if prompt_dir else None
+        self._registry: ToolRegistry = ToolRegistry.get_instance()
+
+    def available_tools(self) -> List[str]:
+        """Return list of registered tool names available to this agent."""
+        return self._registry.list_tools()
+
+    def call_tool(self, tool_name: str, **kwargs) -> ToolResult:
+        """Execute a registered tool and return its result."""
+        return self._registry.execute(tool_name, **kwargs)
 
     @abstractmethod
     def execute(self, input_data: dict) -> dict:
