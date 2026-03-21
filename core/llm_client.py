@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Iterator, Optional
+from typing import Any
 
 import requests
 
@@ -12,12 +12,7 @@ from .exceptions import LLMError
 
 
 class LLMClient:
-    """Minimal client wrapper used by agents and judge components.
-
-    Provider "ollama": real local LLM via Ollama REST API.
-    Provider "mock": deterministic fake responses for testing.
-    Provider "openai" / "openai-compatible": OpenAI-compatible REST API.
-    """
+    """Minimal client wrapper used by agents and judge components."""
 
     def __init__(
         self,
@@ -53,29 +48,6 @@ class LLMClient:
         except json.JSONDecodeError as exc:
             raise LLMError(f"Structured response was not valid JSON: {exc}") from exc
 
-    def is_model_available(self) -> bool:
-        """Check whether the configured model is loaded in Ollama (ping /api/tags)."""
-        if self.provider != "ollama":
-            return True
-        try:
-            resp = requests.get(
-                f"{self.base_url}/api/tags",
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                return False
-            models = resp.json().get("models", [])
-            return any(self.model in m.get("name", "") for m in models)
-        except requests.RequestException:
-            return False
-
-    def stream(self, prompt: str, **kwargs: Any) -> Iterator[str]:
-        """Yield response tokens as they arrive. Only supported for ollama provider."""
-        if self.provider == "ollama":
-            yield from self._stream_ollama(prompt, **kwargs)
-        else:
-            yield self.generate(prompt, **kwargs)
-
     def _generate_ollama(self, prompt: str, **kwargs: Any) -> str:
         payload = {
             "model": self.model,
@@ -93,32 +65,6 @@ class LLMClient:
             return response.json().get("response", "").strip()
         except requests.RequestException as exc:
             raise LLMError(f"Ollama request failed: {exc}") from exc
-
-    def _stream_ollama(self, prompt: str, **kwargs: Any) -> Iterator[str]:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": True,
-        }
-        payload.update(kwargs)
-        try:
-            with requests.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                stream=True,
-                timeout=self.timeout,
-            ) as resp:
-                resp.raise_for_status()
-                for line in resp.iter_lines(decode_unicode=True):
-                    if line:
-                        try:
-                            token = json.loads(line).get("response", "")
-                            if token:
-                                yield token
-                        except json.JSONDecodeError:
-                            continue
-        except requests.RequestException as exc:
-            raise LLMError(f"Ollama stream request failed: {exc}") from exc
 
     def _generate_openai_compatible(self, prompt: str, **kwargs: Any) -> str:
         api_key = os.getenv("OPENAI_API_KEY", "mock-api-key")
