@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-03-22T00:48:12.531963+00:00",
+  "files_checked": 6,
+  "issues_found": 7,
+  "issues": [
+    {
+      "file": "tests.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 错误处理"
+    },
+    {
+      "file": "analysis.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 处理流程"
+    },
+    {
+      "file": "analysis.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 错误处理"
+    },
+    {
+      "file": "review.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 错误处理"
+    },
+    {
+      "file": "execution_report.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 业务规则"
+    },
+    {
+      "file": "execution_report.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 处理流程"
+    },
+    {
+      "file": "execution_report.md",
+      "type": "missing_section",
+      "severity": "low",
+      "message": "文档缺少必要章节: 错误处理"
+    }
+  ],
+  "recommendations": []
+}

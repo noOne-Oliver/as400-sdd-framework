@@ -327,6 +327,59 @@ class Orchestrator:
             return ""
         return self.session_context.get_history_summary()
 
+    def _build_enhanced_context(self, query: str, output_dir: Path) -> str:
+        """Build enhanced context with knowledge graph and directory structure.
+
+        Harness Engineering 理念:
+        - Context Engineering: 确保 agent 在正确时间有正确信息
+        - 包括知识库上下文和项目结构映射
+        """
+        # 知识库上下文
+        kg_context = self.knowledge_graph.build_context(query, limit=3)
+
+        # 目录结构映射
+        dir_structure = self._map_directory_structure(output_dir)
+
+        # 组合上下文
+        sections = [
+            "## 知识库上下文",
+            kg_context,
+            "",
+            "## 项目结构",
+            dir_structure,
+        ]
+
+        return "\n".join(sections)
+
+    def _map_directory_structure(self, directory: Path) -> str:
+        """Generate a directory structure map for the project.
+
+        Returns a tree-like representation of the project structure.
+        """
+        if not directory.exists():
+            return "目录不存在"
+
+        lines = [f"📁 {directory.name}/"]
+
+        try:
+            items = sorted(directory.iterdir(), key=lambda x: (not x.is_dir(), x.name))
+            for item in items[:20]:  # 限制前 20 个条目
+                if item.is_dir():
+                    lines.append(f"   📁 {item.name}/")
+                    # 子目录只显示第一层
+                    try:
+                        sub_items = list(item.iterdir())[:5]
+                        for sub in sub_items:
+                            lines.append(f"      📄 {sub.name}")
+                    except:
+                        pass
+                else:
+                    lines.append(f"   📄 {item.name}")
+        except Exception as e:
+            return f"无法读取目录结构: {e}"
+
+        return "\n".join(lines)
+
     def run(
         self,
         requirement_path: str | Path,
