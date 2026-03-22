@@ -1,8 +1,29 @@
 # AS400 SDD 自动开发框架 (as400-sdd-framework)
 
-本框架基于 **SDD（Specification Driven Development）** 与 Harness Engineering 的 **多 Agent 协作理念**，实现 AS400 上的闭环自动开发流程：
+本框架基于 **SDD（Specification Driven Development）** 与 **Harness Engineering** 的多 Agent 协作理念，实现 AS400 上的闭环自动开发流程。
 
-> 需求分析 → 验证 → 生成 Spec → 验证 → 测试设计 → 验证 → 生成代码 → 验证 → 测试验收
+## ⚠️ 设计理念：Harness Engineering
+
+**Harness Engineering** 是本框架的核心指导思想，参考了 SWE-agent、OpenHands、AutoGen 等业界优秀项目。
+
+### 六大核心原则
+
+| 原则 | 说明 | 在本框架的实现 |
+|------|------|---------------|
+| **Multi-Agent** | 多 Agent 协作 | RA/SD/TD/CG/CR/TE 6 个专用 Agent |
+| **LLM-as-Judge** | 每阶段输出验证评分 | Judge 类 + pass_score ≥ 7 |
+| **Spec-Driven** | 规范驱动开发 | SDD 模板 + 规范化验证 |
+| **Context-Preserved** | 上下文跨阶段传递 | SessionContext + PhaseRecord |
+| **Declarative** | 声明式流水线 | StageDriver + YAML 配置 |
+| **Tool-Registry** | 工具注册表 | ToolRegistry + ShellTool/FileTool |
+
+### 核心流程
+```
+需求 → [RA] → [SD] → [TD‖CG] → [CR] → [TE] → 代码
+         ↓       ↓       ↓        ↓      ↓
+       Judge   Judge   Judge    Judge   Judge
+       ≥7分    ≥7分    ≥7分     ≥7分    通过
+```
 
 ## 架构概述
 

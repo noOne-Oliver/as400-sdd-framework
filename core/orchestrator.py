@@ -23,11 +23,27 @@ from core.knowledge_graph import KnowledgeGraph
 from core.llm_client import LLMClient
 from core.session_context import PhaseRecord, SessionContext
 from core.state_machine import PipelineState, StateMachine
+from core.stage_driver import StageDriver, StageSpec
 
 builtins.OK = "OK"
 
 
 class Orchestrator:
+    """Coordinates the end-to-end AS400 SDD pipeline with retries and judging.
+
+    Note: StageDriver declarative execution is available via run_by_stage_driver()
+    method but requires proper context mapping between stages.
+    """
+
+    # Agent registry for StageDriver
+    _AGENT_REGISTRY = {
+        "ra_agent": None,
+        "sd_agent": None,
+        "td_agent": None,
+        "cg_agent": None,
+        "cr_agent": None,
+        "te_agent": None,
+    }
     """Coordinates the end-to-end AS400 SDD pipeline with retries and judging."""
 
     def __init__(
@@ -71,6 +87,245 @@ class Orchestrator:
         self.cr_agent = CRAgent(self.llm_client)
         self.te_agent = TEAgent(self.llm_client)
         self.session_context = SessionContext(str(requirement_path)) if requirement_path else None
+
+        # Populate agent registry for StageDriver
+        Orchestrator._AGENT_REGISTRY = {
+            "ra_agent": self.ra_agent,
+            "sd_agent": self.sd_agent,
+            "td_agent": self.td_agent,
+            "cg_agent": self.cg_agent,
+            "cr_agent": self.cr_agent,
+            "te_agent": self.te_agent,
+        }
+
+    def run_by_stage_driver(
+        self,
+        requirement_path: str | Path,
+        output_dir: "Path" = None,
+        allow_human_intervention: bool = False,
+    ) -> dict:
+        """Run pipeline using declarative StageDriver approach.
+
+        Stage data flow:
+        - RA output: {program_name, summary, analysis_markdown, ...}
+        - SD input: {analysis: RA output dict}
+        - SD output: {program_name, sdd: string}
+        - TD input: {analysis: RA output dict, sdd: SD sdd string}
+        - TD output: {program_name, tests: string}
+        - CG input: {analysis: RA output dict, sdd: SD sdd string, tests: TD tests string}
+        """
+        requirement_file = Path(requirement_path)
+        target_dir = Path(output_dir) if output_dir else requirement_file.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        self.logger.info("Pipeline started (StageDriver) for requirement: %s", requirement_file)
+        self.state_machine = StateMachine()
+        self.session_context = SessionContext(str(requirement_file))
+
+        # Define stage specs matching the actual agent input/output structure
+        # Includes all stages: RA -> SD -> TD -> CG -> CR -> TE
+        stage_configs = [
+            {
+                "name": "REQUIREMENTS",
+                "agent": "ra_agent",
+                "input_keys": ["requirement_text"],
+                "output_key": "analysis_markdown",
+                "judge": "evaluate_spec",
+                "artifact": "{output_dir}/analysis.md",
+            },
+            {
+                "name": "SPEC_DESIGN",
+                "agent": "sd_agent",
+                "input_keys": ["analysis"],
+                "output_key": "sdd",
+                "judge": "evaluate_spec",
+                "artifact": "{output_dir}/sdd.md",
+            },
+            {
+                "name": "TEST_DESIGN",
+                "agent": "td_agent",
+                "input_keys": ["analysis", "sdd"],
+                "output_key": "tests",
+                "judge": "evaluate_tests",
+                "artifact": "{output_dir}/tests.md",
+            },
+            {
+                "name": "CODE_GENERATION",
+                "agent": "cg_agent",
+                "input_keys": ["analysis", "sdd", "tests"],
+                "output_key": "code",
+                "judge": "evaluate_code",
+                "artifact": "{output_dir}/{program_name}.rpgle",
+            },
+            {
+                "name": "CODE_REVIEW",
+                "agent": "cr_agent",
+                "input_keys": ["code", "program_name"],
+                "output_key": "reviewed_code",
+                "judge": None,  # CR has custom validation
+                "artifact": "{output_dir}/review.md",
+            },
+            {
+                "name": "TEST_EXECUTION",
+                "agent": "te_agent",
+                "input_keys": ["tests", "code", "program_name"],
+                "output_key": "execution_report",
+                "judge": None,  # TE has custom validation
+                "artifact": "{output_dir}/execution_report.md",
+            },
+        ]
+
+        # State mapping for StageDriver (simplified - no CODE_REVIEW/TE in original state machine path)
+        stage_to_state = {
+            "REQUIREMENTS": PipelineState.REQUIREMENTS,
+            "SPEC_DESIGN": PipelineState.SPEC_DESIGN,
+            "TEST_DESIGN": PipelineState.TEST_DESIGN,
+            "CODE_GENERATION": PipelineState.CODE_GENERATION,
+            "CODE_REVIEW": PipelineState.CODE_REVIEW,
+            "TEST_EXECUTION": PipelineState.TEST_EXECUTION,
+        }
+
+        context = {}
+        artifacts = {}  # Store stage outputs for final result
+
+        try:
+            requirement_text = requirement_file.read_text(encoding="utf-8")
+            context["requirement_text"] = requirement_text
+            context["output_dir"] = str(target_dir)
+
+            for stage_config in stage_configs:
+                spec = StageSpec(stage_config)
+
+                # Transition state machine to this stage's state
+                stage_state = stage_to_state.get(spec.name)
+                if stage_state:
+                    self.state_machine.transition_to(stage_state)
+
+                driver = StageDriver(
+                    stage_spec=spec,
+                    agent_registry=Orchestrator._AGENT_REGISTRY,
+                    judge=self.judge,
+                    logger=self.logger,
+                )
+
+                # Build input data for this stage based on its input_keys
+                input_data = {}
+
+                if spec.name == "REQUIREMENTS":
+                    # RA needs requirement_text and knowledge context
+                    input_data["requirement_text"] = requirement_text
+                    input_data["knowledge_context"] = self.knowledge_graph.build_context(
+                        requirement_text
+                    )
+                    input_data["context_summary"] = ""
+
+                elif spec.name == "SPEC_DESIGN":
+                    # SD needs analysis dict (from RA output)
+                    # context["analysis"] was set by RA stage
+                    input_data["analysis"] = context.get("analysis", {})
+                    input_data["context_summary"] = self._get_context_summary()
+
+                elif spec.name == "TEST_DESIGN":
+                    # TD needs analysis dict and sdd string
+                    input_data["analysis"] = context.get("analysis", {})
+                    input_data["sdd"] = context.get("sdd", "")
+                    input_data["context_summary"] = self._get_context_summary()
+
+                elif spec.name == "CODE_GENERATION":
+                    # CG needs analysis dict, sdd string, tests string
+                    input_data["analysis"] = context.get("analysis", {})
+                    input_data["sdd"] = context.get("sdd", "")
+                    input_data["tests"] = context.get("tests", "")
+                    input_data["context_summary"] = self._get_context_summary()
+                    # Also set program_name in context for downstream stages
+                    context["program_name"] = context.get("analysis", {}).get("program_name", "UNKNOWN")
+
+                elif spec.name == "CODE_REVIEW":
+                    # CR needs code and program_name
+                    input_data["code"] = context.get("code", "")
+                    program_name = context.get("analysis", {}).get("program_name", "UNKNOWN")
+                    input_data["program_name"] = program_name
+
+                elif spec.name == "TEST_EXECUTION":
+                    # TE needs tests, code and program_name
+                    input_data["tests"] = context.get("tests", "")
+                    input_data["code"] = context.get("code", "")
+                    program_name = context.get("analysis", {}).get("program_name", "UNKNOWN")
+                    input_data["program_name"] = program_name
+
+                result = driver.run(
+                    context=context,
+                    output_dir=target_dir,
+                    allow_human_intervention=allow_human_intervention,
+                    max_retries=self.max_retries,
+                )
+
+                # Store results in context for next stage
+                # The key is the agent's actual output key
+                if spec.name == "REQUIREMENTS":
+                    # RA returns dict with program_name, summary, analysis_markdown, etc.
+                    context["analysis"] = result
+                    artifacts["analysis"] = result
+
+                elif spec.name == "SPEC_DESIGN":
+                    # SD returns dict with program_name, sdd
+                    context["sdd"] = result.get("sdd", "")
+                    artifacts["sdd"] = result.get("sdd", "")
+
+                elif spec.name == "TEST_DESIGN":
+                    # TD returns dict with program_name, tests
+                    context["tests"] = result.get("tests", "")
+                    artifacts["tests"] = result.get("tests", "")
+
+                elif spec.name == "CODE_GENERATION":
+                    # CG returns dict with program_name, code, generated_files, etc.
+                    context["code"] = result.get("code", "")
+                    artifacts["code"] = result.get("code", "")
+                    artifacts["generated_files"] = result.get("generated_files", {})
+
+                elif spec.name == "CODE_REVIEW":
+                    # CR returns dict with reviewed_code, review_report, findings
+                    artifacts["reviewed_code"] = result.get("reviewed_code", "")
+                    artifacts["review_report"] = result.get("review_report", "")
+
+                elif spec.name == "TEST_EXECUTION":
+                    # TE returns dict with execution_report, passed, etc.
+                    artifacts["execution_report"] = result.get("execution_report", "")
+                    artifacts["test_passed"] = result.get("passed", False)
+
+            self.state_machine.transition_to(
+                PipelineState.COMPLETED,
+                {"message": "Pipeline completed successfully (StageDriver)"},
+            )
+
+            # Save session context
+            if self.session_context:
+                self.session_context.save(target_dir)
+
+            return {
+                "status": "completed",
+                "state": self.state_machine.snapshot(),
+                "artifacts": artifacts,
+                "mode": "stage_driver",
+            }
+
+        except Exception as exc:
+            self.state_machine.transition_to(
+                PipelineState.FAILED,
+                {"message": str(exc)},
+            )
+            self.logger.exception("Pipeline failed (StageDriver)")
+            return {
+                "status": "failed",
+                "state": self.state_machine.snapshot(),
+                "error": str(exc),
+            }
+
+    def _get_context_summary(self) -> str:
+        """Get execution history summary for context injection."""
+        if not self.session_context or not self.session_context.phases:
+            return ""
+        return self.session_context.get_history_summary()
 
     def run(
         self,
