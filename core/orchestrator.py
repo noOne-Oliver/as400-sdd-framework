@@ -18,12 +18,14 @@ from agents.td_agent import TDAgent
 from agents.te_agent import TEAgent
 from core.config_loader import SDDConfig
 from core.exceptions import HumanInterventionRequired, PipelineFailedError
-from core.judge import Judge, JudgeResult
+from core.judge import Judge, JudgeResult, MultiDimensionJudge
 from core.knowledge_graph import KnowledgeGraph
 from core.llm_client import LLMClient
 from core.session_context import PhaseRecord, SessionContext
 from core.state_machine import PipelineState, StateMachine
 from core.stage_driver import StageDriver, StageSpec
+from core.agent_registry import AgentRegistry, DynamicRouter, AgentCapability, get_global_registry
+from core.context_compression import ContextCompressor, CompressionLevel, ContextPreservationBuffer
 
 builtins.OK = "OK"
 
