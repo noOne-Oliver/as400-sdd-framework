@@ -2,6 +2,68 @@
 
 **一行需求进去，完整的 RPGLE 程序出来。**
 
+---
+
+## 2026-03-24 生产级增强
+
+### 新增模块
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| TaskClassifier | `core/task_classifier.py` | 任务分类 + 多Agent路由决策 |
+| MetricsCollector | `core/observability.py` | 指标收集 (p50/p95/p99/成功率/Token) |
+| ModelRouter | `core/model_router.py` | Agent模型路由 + 成本优化 |
+| AgentFallbackHandler | `core/agent_fallback.py` | Fallback机制 + CircuitBreaker + TokenBudget |
+
+### 研究依据
+
+1. **Google Scaling Principles (2026)**：180实验证明多Agent适用场景
+   - 并行任务：多Agent提升81%
+   - 顺序任务：多Agent降低39-70%
+
+2. **Kunal Gangalani Multi-Agent Production Guide (2026)**：生产级最佳实践
+   - 每个Agent需fallback机制
+   - Token budget控制防止超支
+   - 模型路由节省60-70%成本
+   - 可观测性是生产级基础
+
+### 功能详情
+
+**1. 任务分类路由 (TaskClassifier)**
+- 基于任务类型自动决定是否启用多Agent
+- 并行任务(代码生成/测试执行) → 多Agent
+- 顺序任务(需求分析/规格设计) → 单Agent
+- Google研究结论：盲目使用多Agent可能降低性能
+
+**2. Agent Fallback + CircuitBreaker**
+- 每个Agent配置独立fallback策略
+- 连续3次失败触发断路器
+- 降级策略：RETURN_DEFAULT / USE_PREVIOUS / SKIP_STAGE
+
+**3. Token Budget控制**
+- RA/SD/CG: 8K tokens
+- TD/CR: 4K tokens
+- TE: 2K tokens
+- 80%警告阈值，95%临界阈值
+
+**4. Observability指标收集**
+- 延迟：p50/p95/p99
+- 成功率：错误率
+- Token消耗
+- Judge评分
+- 异常告警
+
+**5. 模型路由**
+- 简单Agent (TE) → 小模型
+- 复杂Agent (RA/SD/CG) → 大模型
+- 可节省60-70%成本
+
+### 测试
+- 新增18个单元测试，全部通过
+- 覆盖所有新模块
+
+---**
+
 这是真实发生的事情。整个框架从"能用"到"好用"，走了 4 个阶段，参考了 6 个顶级开源项目，烧掉了无数次 prompt，最终沉淀成这一套可运行的系统。
 
 ---

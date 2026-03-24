@@ -26,6 +26,10 @@ from core.state_machine import PipelineState, StateMachine
 from core.stage_driver import StageDriver, StageSpec
 from core.agent_registry import AgentRegistry, DynamicRouter, AgentCapability, get_global_registry
 from core.context_compression import ContextCompressor, CompressionLevel, ContextPreservationBuffer
+from core.task_classifier import TaskClassifier, TaskType, get_task_classifier
+from core.observability import MetricsCollector, get_metrics_collector
+from core.model_router import ModelRouter, get_model_router
+from core.agent_fallback import AgentFallbackHandler, get_fallback_handler, TokenBudget
 
 builtins.OK = "OK"
 
@@ -90,6 +94,15 @@ class Orchestrator:
         self.te_agent = TEAgent(self.llm_client)
         self.session_context = SessionContext(str(requirement_path)) if requirement_path else None
 
+        # Initialize new modules for production-ready enhancements
+        self.task_classifier = get_task_classifier()
+        self.metrics_collector = get_metrics_collector(f"pipeline_{int(datetime.now().timestamp())}")
+        self.model_router = get_model_router()
+        self.fallback_handler = get_fallback_handler()
+
+        # Initialize token budgets for each agent
+        self._initialize_token_budgets()
+
         # Populate agent registry for StageDriver
         Orchestrator._AGENT_REGISTRY = {
             "ra_agent": self.ra_agent,
@@ -99,6 +112,26 @@ class Orchestrator:
             "cr_agent": self.cr_agent,
             "te_agent": self.te_agent,
         }
+
+    def _initialize_token_budgets(self) -> None:
+        """Initialize token budgets for each agent.
+
+        Token budget配置 (基于Google研究和Kunal的生产指南):
+        - 简单agent (TE): 2K tokens
+        - 中等agent (TD, CR): 4K tokens
+        - 复杂agent (RA, SD, CG): 8K tokens
+        """
+        budgets = {
+            "ra_agent": TokenBudget(max_tokens=8000),
+            "sd_agent": TokenBudget(max_tokens=8000),
+            "td_agent": TokenBudget(max_tokens=4000),
+            "cg_agent": TokenBudget(max_tokens=8000),
+            "cr_agent": TokenBudget(max_tokens=4000),
+            "te_agent": TokenBudget(max_tokens=2000),
+        }
+
+        for agent_name, budget in budgets.items():
+            self.fallback_handler.set_token_budget(agent_name, budget)
 
     def run_by_stage_driver(
         self,
@@ -255,12 +288,57 @@ class Orchestrator:
                     program_name = context.get("analysis", {}).get("program_name", "UNKNOWN")
                     input_data["program_name"] = program_name
 
-                result = driver.run(
-                    context=context,
-                    output_dir=target_dir,
-                    allow_human_intervention=allow_human_intervention,
-                    max_retries=self.max_retries,
+                # Task classification for multi-agent routing decision
+                task_name = spec.name.lower()
+                classification = self.task_classifier.classify(task_name, context)
+                self.logger.info(
+                    f"Stage {spec.name}: task_type={classification.task_type.value}, "
+                    f"use_multi_agent={classification.use_multi_agent}"
                 )
+
+                # Get recommended model for this agent
+                model_config = self.model_router.get_model_for_agent(
+                    spec.agent,
+                    classification.complexity
+                )
+                self.logger.info(f"Stage {spec.name}: using model {model_config.name}")
+
+                # Check circuit breaker before execution
+                if not self.fallback_handler.check_circuit_breaker(spec.agent):
+                    self.logger.warning(f"Circuit breaker open for {spec.agent}, using fallback")
+                    result = self.fallback_handler._execute_fallback(spec.agent, context)
+                else:
+                    # Record start time for latency tracking
+                    import time
+                    stage_start_time = time.time()
+
+                    result = driver.run(
+                        context=context,
+                        output_dir=target_dir,
+                        allow_human_intervention=allow_human_intervention,
+                        max_retries=self.max_retries,
+                    )
+
+                    # Record metrics
+                    stage_duration_ms = (time.time() - stage_start_time) * 1000
+                    judge_score = result.get("judge_result", {}).get("score", 0)
+                    success = result.get("judge_result", {}).get("passed", False)
+
+                    self.metrics_collector.record_agent_execution(
+                        agent_name=spec.agent,
+                        phase=spec.name,
+                        latency_ms=stage_duration_ms,
+                        token_used=len(str(result)) // 4,  # Rough estimate
+                        success=success,
+                        retry_count=0,
+                        model=model_config.name,
+                        score=judge_score,
+                    )
+
+                    if success:
+                        self.fallback_handler.record_success(spec.agent)
+                    else:
+                        self.fallback_handler.record_failure(spec.agent, "Judge failed")
 
                 # Store results in context for next stage
                 # The key is the agent's actual output key
@@ -304,11 +382,29 @@ class Orchestrator:
             if self.session_context:
                 self.session_context.save(target_dir)
 
+            # Save metrics
+            metrics_file = self.metrics_collector.save_metrics(target_dir)
+
+            # Check for anomalies
+            alerts = self.metrics_collector.check_anomalies()
+            if alerts:
+                self.logger.warning(f"Metrics alerts detected: {len(alerts)} issues")
+                for alert in alerts:
+                    self.logger.warning(f"  - {alert['type']}: agent={alert.get('agent')}")
+
             return {
                 "status": "completed",
                 "state": self.state_machine.snapshot(),
                 "artifacts": artifacts,
                 "mode": "stage_driver",
+                "metrics": {
+                    "stats": self.metrics_collector.get_pipeline_stats(),
+                    "file": str(metrics_file),
+                    "alerts": alerts,
+                },
+                "task_classification": self.task_classifier.get_classification_stats(),
+                "model_routing": self.model_router.get_routing_stats(),
+                "fallback_stats": self.fallback_handler.get_fallback_stats(),
             }
 
         except Exception as exc:

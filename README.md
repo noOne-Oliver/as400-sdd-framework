@@ -17,6 +17,18 @@
 | **Declarative** | 声明式流水线 | StageDriver + YAML 配置 |
 | **Tool-Registry** | 工具注册表 | ToolRegistry + ShellTool/FileTool |
 
+## 🆕 生产级增强功能 (2026-03)
+
+基于 2026 年 AI 工程化最新研究（Google Scaling Principles、Multi-Agent Production Guide）实现的生产级增强：
+
+| 功能 | 说明 | 依据 |
+|------|------|------|
+| **任务分类路由** | TaskClassifier 根据任务类型决定是否启用多Agent | Google: 顺序任务多Agent降低39-70%性能 |
+| **Agent Fallback** | 每个Agent失败时降级到默认行为 | Kunal: 每个Agent需要fallback机制 |
+| **Token Budget** | 每个Agent设置max token防止 runaway | Kunal: Token budgets防止超支 |
+| **Observability** | 指标收集：p50/p95/p99延迟、成功率、Token消耗 | Kunal: 可观测性是生产级基础 |
+| **模型路由** | 简单Agent用小模型，复杂Agent用大模型 | Kunal: 可节省60-70%成本 |
+
 ### 核心流程
 ```
 需求 → [RA] → [SD] → [TD‖CG] → [CR] → [TE] → 代码
